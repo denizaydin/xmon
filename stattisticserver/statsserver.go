@@ -340,13 +340,15 @@ func main() {
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs)
 	go func() {
-		s := <-sigs
-		switch s {
-		case syscall.SIGURG:
-			statsserver.logging.Infof("xmon statisticserver: received unhandled %v signal from os:", s)
-		default:
-			statsserver.logging.Infof("xmon statisticserver: received %v signal from os,exiting", s)
-			os.Exit(1)
+		for {
+			s := <-sigs
+			switch s {
+			case syscall.SIGURG:
+				server.Logging.Infof("xmon statisticserver: received unhandled %v signal from os", s)
+			default:
+				server.Logging.Infof("xmon statisticserver: received %v signal from os,exiting", s)
+				os.Exit(1)
+			}
 		}
 	}()
 	go writeToDB(statsserver)

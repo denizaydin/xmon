@@ -309,6 +309,19 @@ func main() {
 	c.Logging.Infof("client is initialized with parameters:%v", c)
 	go getMonitoringObjects(c)
 	go connectStatsServer(c)
+	go func() {
+		for {
+			s := <-sigs
+			switch s {
+			case syscall.SIGURG:
+				server.Logging.Infof("xmon statisticserver: received unhandled %v signal from os", s)
+			default:
+				server.Logging.Infof("xmon statisticserver: received %v signal from os,exiting", s)
+				c.Stop()
+				os.Exit(1)
+			}
+		}
+	}()
 	c.Run()
 	c.WaitGroup.Add(1)
 	go func() {

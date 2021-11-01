@@ -1,0 +1,40 @@
+{
+    "pingdests": {
+        "google": {
+            "destination": "www.google.com",
+            "timeout": "3",
+            "interval": 3000,
+            "groups": {
+                "default": "default"
+            }
+        }
+    },
+    "appdests": {
+        "test-1": {
+            "destination": "localhost:8888",
+            "interval":500,
+            "type":2,
+            "groups": {
+                "default": "default"
+            }
+            }
+    },
+    "resolvedests": {
+        "trendyol.com": {
+            "destination": "www.google.com",
+            "interval":1000,
+            "groups": {
+                "default": "default"
+            }
+            }
+    },
+    "tracedests": {
+        "trendyol.com": {
+            "destination": "www.google.com",
+            "interval":1000,
+            "groups": {
+                "default": "default"
+            }
+            }
+    }
+}

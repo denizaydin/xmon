@@ -1,0 +1,150 @@
+/*
+export PATH="$PATH:$(go env GOPATH)/bin"
+protoc --go_out=. --go_opt=paths=source_relative \
+    --go-grpc_out=. --go-grpc_opt=require_unimplemented_servers=false,paths=source_relative \
+    proto/xmon.proto
+*/
+syntax = "proto3";
+
+package proto;
+
+option go_package = "xmon/proto";
+
+message ClientStat {
+    int32 ConfiguredMonObjects = 1;
+    int32 RunningMonObjects = 2; 
+
+}
+
+message PingStat {
+    string destination = 1; 
+    int32 rtt = 2;
+    int32 code=3;
+    int32 ttl=4;
+}
+message ResolveStat {
+    string destination = 1;
+    int32 rtt = 2;
+    string resolvedip=3;
+    string resolver=4;
+    
+}
+message TraceStat {
+    string destination = 1;
+    string hopIP = 2;
+    int32 hopTTL = 3;
+    int32 hopRTT= 4;
+}
+message AppStat {
+    string destination = 1;
+    int64 clientSendTimestamp = 2;
+    int64 serverReceiveTimestamp = 3;
+    int64 serverSendTimestamp = 4;
+    int64 clientReceiveTimestamp = 5;
+    int64 serverDelay = 6;
+    int64 clientNetworkDelay=7;
+    int64 serverNetworkDelay=8;
+    int64 serverResponseDelay=9;
+
+}
+message StatsObject {
+    Client client =1;
+    int64 timestamp = 2; //timestamp of the stat
+    oneof Object {
+        ClientStat clientstat = 3;
+        PingStat pingstat = 4;
+        ResolveStat resolvestat = 5;
+        TraceStat tracestat = 6;
+        AppStat appstat = 7;
+    }
+}
+//PinDest: IPv4 ICMP monitoring object
+message PingDest {
+    string name = 1; //name: Name for the Object
+    string destination = 2; //Destination, www.nmon.com, 127.0.0.1 e.t.c
+    int32 interval = 3; //Probe interval in milli seconds.
+    int32 packetSize = 4; //Packet size to be used by probe.
+    int32 ttl = 5; // Max TTL of the ip packet
+    map<string, string> groups = 6; //Member groups
+}
+//TraceDest: IPv4 ICMP Trace destination monitoring object
+message TraceDest {
+    string name = 1;
+    string destination = 2; //Destination, www.nmon.com, 127.0.0.1 e.t.c
+    int32 interval = 3; //Probe interval in milli seconds
+    int32 ttl = 4; //Max TTL, hopcount
+    map<string, string> groups = 5; //Member groups
+}
+//ResolveDest: DNS resolve object
+message ResolveDest {
+    string name = 1;
+    string destination = 2; //Destination, www.nmon.com
+    int32 interval = 3; //Probe interval in micro seconds
+    string resolveServer = 4; //DNS Server to be used, 8.8.8.8 e.t.c
+    map<string, string> groups = 5; //Member groups
+}
+message AppDest {
+    string name = 1;
+    string destination = 2; //Destination, www.nmon.com, 127.0.0.1
+    enum Type {
+        HTTP = 0;
+        HTTPS = 1;
+        GRPC = 2;
+    }
+    Type type = 4;
+    int32 interval = 5; //Probe interval in micro seconds
+    map<string, string> groups = 6; //Member groups
+}
+message MonitoringObject {
+    int32 UpdateInterval = 1; //How of the object will be updated in milliseconds
+    oneof Object {
+        PingDest pingdest = 2;
+        TraceDest tracedest = 3;
+        ResolveDest resolvedest = 4;
+        AppDest appdest = 5;
+    }
+}
+/*
+Structures used by configuration and statistic servers
+*/
+//Client information to be used while registering configuration or statistic server
+message Client {
+    string id = 1; //Uniq id representing the client. It should be uniuqe during client reboots and between clients.
+    string name = 2; //Name of client. Must be unique.
+    map<string, string> groups = 3; //Member groups
+    bool addAsPingDest = 4; //Willing to be monitored as pingDest. If true this client will monitored by its group members.
+    bool addAsTraceDest = 5; //Willing to be monitores as TraceDest. If true this client will monitored by its group members.
+    bool addAsAppDest = 6; //Willing to be monitores as TraceDest. If true this client will monitored by its group members.
+}
+//Connect message used while registering the servers.
+message Connect {
+    Client client = 1;
+}
+// EchoRequest is the request for echo.
+message XmonEchoRequest {
+    int64 clientSendTimestamp = 1;
+    int64 serverReceiveTimestamp = 2;
+    int64 serverSendTimestamp = 3;
+    int64 clientReceiveTimestamp = 4;
+}
+// EchoResponse is the response for echo.
+message XmonEchoResponse {
+    int64 clientSendTimestamp = 1;
+    int64 serverReceiveTimestamp = 2;
+    int64 serverSendTimestamp = 3;
+    int64 clientReceiveTimestamp = 4;
+    int64 serverDelay = 5;
+}
+// Close - empty close message.
+message Close {}
+
+//Used by monitoring clients if they want to be monitored by grpc
+service UnaryEchoService {
+ rpc UnaryEcho(XmonEchoRequest) returns (XmonEchoResponse) {}
+}
+service ConfigServer {
+    rpc CreateStream(Connect) returns (stream MonitoringObject);
+}
+service Stats {
+    rpc RecordStats(stream StatsObject) returns (Close);
+}

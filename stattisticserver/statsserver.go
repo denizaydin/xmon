@@ -15,10 +15,12 @@ import (
 	"encoding/binary"
 	"flag"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"net"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -134,20 +136,20 @@ func (s *StatsServer) RecordStats(stream proto.Stats_RecordStatsServer) error {
 	if ok {
 		clientIP = strings.Split(pr.Addr.String(), ":")[0]
 	}
-	s.logging.Debugf("xmon statisticserver: statistic request from the address:%v", clientIP)
+	s.logging.Tracef("xmon statisticserver: statistic request from the address:%v", clientIP)
 	_, ipnet, neterr := net.ParseCIDR(clientIP + "/24")
 	if neterr == nil {
 		clientNet = ipnet.String()
 	}
-	s.logging.Infof("xmon statisticserver: new client stats from ip:%v network:%v", clientIP, clientNet)
+	s.logging.Tracef("xmon statisticserver: new client stats from ip:%v network:%v", clientIP, clientNet)
 	if net.ParseIP(clientIP).IsGlobalUnicast() && !net.ParseIP(clientIP).IsPrivate() {
 		_, ok = s.ip2ASN[clientNet]
 		if !ok {
-			s.logging.Debugf("xmon statisticserver: retriving the client:%v information from ripe", clientIP)
+			s.logging.Tracef("xmon statisticserver: retriving the client:%v information from ripe", clientIP)
 			var p ripe.Prefix
 			p.Set(clientNet)
 			p.GetData()
-			s.logging.Debugf("xmon statisticserver: got the client information from ripe:%v", p)
+			s.logging.Tracef("xmon statisticserver: got the client information from ripe:%v", p)
 			data, _ := p.Data["data"].(map[string]interface{})
 			asns := data["asns"].([]interface{})
 			//TODO: more than one ASN per prefix?
@@ -159,10 +161,23 @@ func (s *StatsServer) RecordStats(stream proto.Stats_RecordStatsServer) error {
 		clientAs = fmt.Sprintf("%f", s.ip2ASN[clientNet])
 		clientHolder = s.ip2Holder[clientNet]
 	}
+	s.logging.Infof("xmon statisticserver: statistic request from the client ip:%v, net:%v, as:%v, asowner:%v", clientIP, clientNet, clientAs, clientHolder)
 
 	for {
 		receivedstat, err := stream.Recv()
+		if err == io.EOF {
+			return nil
+		}
 		if err == nil {
+			if receivedstat.GetClient().GetAs() != "unkown" {
+				clientAs = receivedstat.GetClient().GetAs()
+			}
+			if receivedstat.GetClient().GetAsowner() != "unkown" {
+				clientHolder = receivedstat.GetClient().GetAsowner()
+			}
+			if receivedstat.GetClient().GetIpnet() != "unkown" {
+				clientNet = receivedstat.GetClient().GetIpnet()
+			}
 			var stat = &Stat{
 				ClientName:     receivedstat.GetClient().GetName(),
 				ClientAS:       clientAs,
@@ -201,6 +216,9 @@ func (s *StatsServer) RecordStats(stream proto.Stats_RecordStatsServer) error {
 					}
 					hopASN = fmt.Sprintf("%f", s.ip2ASN[hopNet])
 					hopASNHolder = s.ip2Holder[hopNet]
+				} else if net.ParseIP(hopIP).IsPrivate() {
+					hopASN = "private"
+					hopASNHolder = "private"
 				}
 				stat.HopASN = hopASN
 				stat.HopASNowner = hopASNHolder
@@ -229,19 +247,27 @@ func writeToDB(s *StatsServer) {
 	client := influxdb2.NewClient(s.influxAddress, s.influxToken)
 	// user blocking write client for writes to desired bucket
 	// Get non-blocking write client
-	writeAPI := client.WriteAPI("my-org", "xmon")
+
+	writeAPI := client.WriteAPI("xmon", "xmonStats")
+	errorsCh := writeAPI.Errors()
+	go func() {
+		for err := range errorsCh {
+			s.logging.Errorf("xmon statisticserver: write error: %s\n", err.Error())
+		}
+	}()
 	for {
 		select {
 		case stat := <-s.dbwriteChannel:
-			switch t := stat.NmonStat.Object.(type) {
+			s.logging.Tracef("xmon statisticserver: dbclient received stat:%v", stat)
+			switch stat.NmonStat.Object.(type) {
 			case *proto.StatsObject_Clientstat:
-				s.logging.Tracef("xmon statisticserver: dbclient received %v stat:%v", t, stat)
+				s.logging.Tracef("xmon statisticserver: dbclient client stat:%v", stat.NmonStat.Object)
 				p := influxdb2.NewPoint(
 					"clientstat",
 					map[string]string{
 						"client_name":   stat.ClientName,
 						"client_as":     stat.ClientAS,
-						"clietn_asname": stat.ClientASHolder,
+						"client_asname": stat.ClientASHolder,
 					},
 					map[string]interface{}{
 						"configured_objects": stat.NmonStat.GetClientstat().GetConfiguredMonObjects(),
@@ -252,14 +278,16 @@ func writeToDB(s *StatsServer) {
 				writeAPI.WritePoint(p)
 				// write asynchronously
 			case *proto.StatsObject_Pingstat:
-				s.logging.Tracef("xmon statisticserver: dbclient received %v stat:%v", t, stat)
+				s.logging.Tracef("xmon statisticserver: dbclient ping stat:%v", stat.NmonStat.Object)
 				p := influxdb2.NewPoint(
 					"pingstat",
 					map[string]string{
 						"client_name":   stat.ClientName,
 						"client_as":     stat.ClientAS,
-						"clietn_asname": stat.ClientASHolder,
+						"client_asname": stat.ClientASHolder,
+						"client_net":    stat.ClientNet,
 						"destination":   stat.NmonStat.GetPingstat().GetDestination(),
+						"error":         strconv.FormatBool(stat.NmonStat.GetPingstat().GetError()),
 					},
 					map[string]interface{}{
 						"rtt":  stat.NmonStat.GetPingstat().GetRtt(),
@@ -270,15 +298,17 @@ func writeToDB(s *StatsServer) {
 				// write asynchronously
 				writeAPI.WritePoint(p)
 			case *proto.StatsObject_Resolvestat:
-				s.logging.Tracef("xmon statisticserver: dbclient received %v stat:%v", t, stat)
+				s.logging.Tracef("xmon statisticserver: dbclient resolve stat:%v", stat.NmonStat.Object)
 				p := influxdb2.NewPoint(
 					"resolvestat",
 					map[string]string{
 						"client_name":   stat.ClientName,
 						"client_as":     stat.ClientAS,
-						"clietn_asname": stat.ClientASHolder,
+						"client_asname": stat.ClientASHolder,
+						"client_net":    stat.ClientNet,
 						"destination":   stat.NmonStat.GetResolvestat().GetDestination(),
 						"resolver":      stat.NmonStat.GetResolvestat().GetResolver(),
+						"error":         strconv.FormatBool(stat.NmonStat.GetResolvestat().GetError()),
 					},
 					map[string]interface{}{
 						"rtt":        stat.NmonStat.GetResolvestat().GetRtt(),
@@ -288,34 +318,37 @@ func writeToDB(s *StatsServer) {
 				// write asynchronously
 				writeAPI.WritePoint(p)
 			case *proto.StatsObject_Tracestat:
-				s.logging.Tracef("xmon statisticserver: dbclient received %v stat:%v", t, stat)
+				s.logging.Tracef("xmon statisticserver: dbclient trace stat:%v", stat.NmonStat.Object)
 				p := influxdb2.NewPoint(
 					"tracestat",
 					map[string]string{
 						"client_name":   stat.ClientName,
 						"client_as":     stat.ClientAS,
-						"clietn_asname": stat.ClientASHolder,
+						"client_asname": stat.ClientASHolder,
+						"client_net":    stat.ClientNet,
 						"destination":   stat.NmonStat.GetTracestat().GetDestination(),
 						"hop_ip":        stat.NmonStat.GetTracestat().GetHopIP(),
 						"hop_asn":       stat.HopASN,
 						"hop_owner":     stat.HopASNowner,
 					},
 					map[string]interface{}{
-						"rtt": stat.NmonStat.GetTracestat().GetHopTTL(),
+						"rtt": stat.NmonStat.GetTracestat().GetHopRTT(),
 						"ttl": stat.NmonStat.GetTracestat().GetHopTTL(),
 					},
 					time.Now())
 				// write asynchronously
 				writeAPI.WritePoint(p)
 			case *proto.StatsObject_Appstat:
-				s.logging.Tracef("xmon statisticserver: dbclient received %v stat:%v", t, stat)
+				s.logging.Tracef("xmon statisticserver: dbclient app stat:%v", stat.NmonStat.Object)
 				p := influxdb2.NewPoint(
 					"appstat",
 					map[string]string{
 						"client_name":   stat.ClientName,
 						"client_as":     stat.ClientAS,
-						"clietn_asname": stat.ClientASHolder,
+						"client_asname": stat.ClientASHolder,
+						"client_net":    stat.ClientNet,
 						"destination":   stat.NmonStat.GetAppstat().Destination,
+						"error":         strconv.FormatBool(stat.NmonStat.GetAppstat().GetError()),
 					},
 					map[string]interface{}{
 						"client_Network_Delay":  stat.NmonStat.GetAppstat().ClientNetworkDelay,
@@ -335,29 +368,28 @@ func writeToDB(s *StatsServer) {
 	*/
 }
 func main() {
-	statsserver.logging.Infof("xmon statisticserver: server is initialized with parameters:%v", statsserver)
-
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs)
+	statsserver.logging.Infof("xmon statisticserver: server is initialized with parameters:%v", statsserver)
 	go func() {
 		for {
 			s := <-sigs
 			switch s {
 			case syscall.SIGURG:
-				server.Logging.Infof("xmon statisticserver: received unhandled %v signal from os", s)
+				statsserver.logging.Infof("xmon statisticserver: received unhandled %v signal from os", s)
 			default:
-				server.Logging.Infof("xmon statisticserver: received %v signal from os,exiting", s)
+				statsserver.logging.Infof("xmon statisticserver: received %v signal from os,exiting", s)
 				os.Exit(1)
 			}
 		}
 	}()
 	go writeToDB(statsserver)
 	grpcServer := grpc.NewServer(grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
-		MinTime:             5 * time.Second, // If a client pings more than once every x seconds, terminate the connection
+		MinTime:             1 * time.Second, // If a client pings more than once every x seconds, terminate the connection
 		PermitWithoutStream: true,            // Allow pings even when there are no active streams
 	}), grpc.KeepaliveParams(keepalive.ServerParameters{
 		MaxConnectionIdle: 15 * time.Second, // If a client is idle for x seconds, send a GOAWAY
-		Time:              5 * time.Second,  // Ping the client if it is idle for x seconds to ensure the connection is still active
+		Time:              1 * time.Second,  // Ping the client if it is idle for x seconds to ensure the connection is still active
 		Timeout:           5 * time.Second,  // Wait x second for the ping ack before assuming the connection is dead
 	}))
 	statsserver.logging.Debugf("xmon statisticserver: starting server at:%v", statsserver.serverAddress)

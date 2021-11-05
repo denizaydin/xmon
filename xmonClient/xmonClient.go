@@ -5,14 +5,19 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"flag"
+	"fmt"
 	"io/ioutil"
+	"net/http"
 	"os"
+	"os/signal"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	xmonClient "github.com/denizaydin/xmon/client"
 	proto "github.com/denizaydin/xmon/proto"
+	"github.com/mehrdadrad/mylg/ripe"
 	logrus "github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
@@ -174,7 +179,7 @@ func getMonitoringObjects(client *xmonClient.XmonClient) {
 					c.IsConfigClientConnected = false
 					break
 				}
-				c.Logging.Debugf("received configuration message %s", monitoringObject)
+				c.Logging.Debugf("received update %s", monitoringObject)
 				// adding configuration objects into conf objects map. As same destinstion can be added for multiple type, uniquness is needed for the map key.
 				switch t := monitoringObject.Object.(type) {
 				case *proto.MonitoringObject_Pingdest:
@@ -240,19 +245,55 @@ func getMonitoringObjects(client *xmonClient.XmonClient) {
 
 		}
 		c.Logging.Errorf("configuration service failed, waiting for 3sec to retry")
-		time.Sleep(1 * time.Second)
+		time.Sleep(3 * time.Second)
 	}
 }
-func connectStatsServer(client *xmonClient.XmonClient) {
-	c.Logging.Infof("started statistic server connection:%v", statsServer)
+func sendStats(client *xmonClient.XmonClient) {
+	c.Logging.Infof("started statistic server:%v connection", statsServer)
 	go func() {
+		c.Logging.Debugf("started statistic server:%v connection checking", statsServer)
 		for {
-			c.Logging.Infof("is statistic server connected?:%v", c.IsStatsClientConnected)
+			c.Logging.Debugf("is statistic server connected?:%v", c.IsStatsClientConnected)
 			if !c.IsStatsClientConnected {
-				c.Logging.Debugf("tring to connect statistic server:%v with name:%v and id:%v", *statsServer, c.StatsClient.GetName(), c.StatsClient.GetId())
+				//Get our ASN, and ASN owner
+				//Get our public ip,
+				asn := "unkown"
+				asnowner := "unkown"
+				clientip := "unknown"
+				clientnet := "unkown"
+				url := "https://api.ipify.org?format=text"
+				c.Logging.Debug("Getting IP address from  ipify ...")
+				resp, err := http.Get(url)
+				if err != nil {
+					c.Logging.Warnf("can not get ip address,err:%v", err)
+				}
+				defer resp.Body.Close()
+				ip, err := ioutil.ReadAll(resp.Body)
+				if err == nil {
+					clientip = string(ip)
+					clientnet := string(ip) + "/24"
+					var p ripe.Prefix
+					p.Set(clientnet)
+					p.GetData()
+					c.Logging.Tracef("xmon statisticserver: got the client information from ripe:%v", p)
+					data, _ := p.Data["data"].(map[string]interface{})
+					asns := data["asns"].([]interface{})
+					//TODO: more than one ASN per prefix?
+					for _, h := range asns {
+						asnowner = h.(map[string]interface{})["holder"].(string)
+						asn = fmt.Sprintf("%f", h.(map[string]interface{})["asn"].(float64))
+					}
+				} else {
+					c.Logging.Warnf("can not parse ip address,err:%v", err)
+				}
+				c.StatsClient.As = asn
+				c.StatsClient.Asowner = asnowner
+				c.StatsClient.Ip = clientip
+				c.StatsClient.Ipnet = clientnet
+				c.Logging.Tracef("tring to connect statistic server:%v with name:%v and id:%v, public:%v, as:%v, asowner:%v", *statsServer, c.StatsClient.GetName(), c.StatsClient.GetId(), ip, asn, asnowner)
 				conn, err := grpc.Dial(*statsServer, grpc.WithInsecure(), grpc.WithKeepaliveParams(keepalive.ClientParameters{
-					Time:                3 * time.Second, // send pings every 10 seconds if there is no activity
-					Timeout:             5 * time.Second, // wait 1 second for ping ack before considering the connection dead
+					Time:                1 * time.Second, // send pings every 1 seconds if there is no activity
+					Timeout:             5 * time.Second, // wait 5 second for ping ack before considering the connection dead
 					PermitWithoutStream: true,            // send pings even without active streams
 				}), grpc.WithDefaultServiceConfig(`{
 			"methodConfig": [{
@@ -267,61 +308,78 @@ func connectStatsServer(client *xmonClient.XmonClient) {
 			  }
 			}]}`), grpc.WithBlock())
 				if err != nil {
-					c.Logging.Errorf("could not connect to statistic service:%v, waiting for 10sec to retry", err)
+					c.Logging.Errorf("could not connect to statistic service:%v, waiting for 30sec to retry", err)
 					c.IsStatsClientConnected = false
-					break
+					time.Sleep(30 * time.Second)
+					continue
 				}
-				c.Logging.Debugf("connected to the statistic server:%v with name:%v and id:%v", *statsServer, c.StatsClient.GetName(), c.StatsClient.GetId())
+				c.Logging.Tracef("connected to the statistic server:%v with name:%v and id:%v", *statsServer, c.StatsClient.GetName(), c.StatsClient.GetId())
 				c.StatsConnClient = proto.NewStatsClient(conn)
 				c.IsStatsClientConnected = true
 			}
-			c.Logging.Debug("cheking statistic server connection in 1sec")
-			time.Sleep(1 * time.Second)
+			c.Logging.Debug("cheking statistic server connection in 10sec")
+			time.Sleep(10 * time.Second)
 		}
 	}()
 
 	for {
-		select {
-		case stat := <-c.Statschannel:
-			c.Logging.Tracef("received client statistics:%v", stat)
-			if c.IsStatsClientConnected {
-				stream, err := c.StatsConnClient.RecordStats(context.Background())
+		if c.IsStatsClientConnected {
+			numberOfWaitingStats := len(c.Statschannel)
+			if numberOfWaitingStats > (len(c.Statschannel) * 20 / 100) {
+				c.Logging.Tracef("received stat channel len:%v cap:%v", len(c.Statschannel), cap(c.Statschannel))
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				stream, err := c.StatsConnClient.RecordStats(ctx)
+				i := 0
 				if err != nil {
-					c.Logging.Errorf("statistic service registration failed:%v", err)
+					client.Logging.Errorf("statistic service registration failed:%v, sleeping 1sec", err)
 					c.IsStatsClientConnected = false
-					break
+					continue
 				}
-				if err := stream.Send(stat); err != nil {
-					c.Logging.Errorf("can not send stats:%v, err:%v", stream, err)
-					c.IsStatsClientConnected = false
-					break
+				for i < numberOfWaitingStats {
+					stat := <-c.Statschannel
+					if err := stream.Send(stat); err != nil {
+						c.Logging.Errorf("can not send stats:%v, err:%v", stream, err)
+						c.IsStatsClientConnected = false
+						break
+					}
+					c.Logging.Tracef("sent statistics:%v", stat)
+					c.IsStatsClientConnected = true
+					i++
 				}
-				c.Logging.Tracef("sent client statistics:%v", stat)
-				break
+				stream.CloseSend()
 			}
-			c.IsStatsClientConnected = false
-			c.Logging.Tracef("statistic server is not redy, can not sent client statistics:%v", stat)
+			//How long we will check the stat channel, for preventing infinite loop
+			//TODO: Dynamic wait interval for checking buffered channel. If its fill quicly we should drain more often.
+			time.Sleep(10 * time.Millisecond)
+		} else {
+			c.Logging.Warn("not connected to the statistic server, sleeping for 1sec")
+			time.Sleep(1 * time.Second)
 		}
 	}
 }
 
 func main() {
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs)
 	c.Logging.Infof("client is initialized with parameters:%v", c)
 	go getMonitoringObjects(c)
-	go connectStatsServer(c)
+	go sendStats(c)
+
 	go func() {
 		for {
 			s := <-sigs
 			switch s {
 			case syscall.SIGURG:
-				server.Logging.Infof("xmon statisticserver: received unhandled %v signal from os", s)
+				c.Logging.Infof("received unhndled %v signal from os", s)
 			default:
-				server.Logging.Infof("xmon statisticserver: received %v signal from os,exiting", s)
+				c.Logging.Infof("received %v signal from os,exiting", s)
 				c.Stop()
 				os.Exit(1)
 			}
 		}
 	}()
+
 	c.Run()
 	c.WaitGroup.Add(1)
 	go func() {

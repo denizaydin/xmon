@@ -30,7 +30,7 @@ type MonitoringObjects struct {
 //ClientConnection - Client connection
 type ClientConnection struct {
 	stream         proto.ConfigServer_CreateStreamServer
-	client         proto.Client
+	client         *proto.Client
 	net            string
 	active         bool
 	lastactivetime int64
@@ -119,7 +119,7 @@ func (s *Server) CreateStream(pconn *proto.Connect, stream proto.ConfigServer_Cr
 	// may be reject client requests from the same ip address!
 	s.Connections[clientName] = &ClientConnection{
 		stream:         stream,
-		client:         *pconn.Client,
+		client:         pconn.Client,
 		net:            pr.Addr.String(),
 		active:         true,
 		lastactivetime: time.Now().UnixNano(),
@@ -128,18 +128,18 @@ func (s *Server) CreateStream(pconn *proto.Connect, stream proto.ConfigServer_Cr
 	return <-s.Connections[pconn.Client.GetName()].error
 }
 
-//removeLongDeadClients - checks the current connections for clients which are inactive more than 4 updata time interval.
+//removeLongDeadClients - checks the current connections for clients which are inactive more than 4 update time interval.
 func removeLongDeadClients(s *Server) {
 	go func() {
 		for {
 			time.Sleep(4 * time.Duration(s.ClientUpdateInterval) * time.Second)
-			s.Logging.Debug("configserver: checking for connections which are not active more than 4 times update period:%v", s.ClientUpdateInterval)
+			s.Logging.Debugf("configserver: checking for connections which are not active more than 4 times update period:%v", s.ClientUpdateInterval)
 			for key, conn := range s.Connections {
 				if conn.active == false {
 					server.Logging.Debugf("configserver: found inactive client:%v, last active time:%v and our time:%v", key, time.Unix(0, conn.lastactivetime), time.Now())
 					if time.Now().UnixNano()-conn.lastactivetime > int64(time.Duration(4*s.ClientUpdateInterval*int(time.Second))) {
 						delete(s.Connections, key)
-						server.Logging.Infof("found inactive client:%v, removed from connection list", conn.client)
+						server.Logging.Infof("found inactive client:%v, removed from connection list", conn.client.Id)
 					}
 				}
 			}
@@ -242,10 +242,10 @@ func calculateUpdate(s *Server, updateClient *ClientConnection) map[string]*prot
 				update[key] = &proto.MonitoringObject{
 					Object: &proto.MonitoringObject_Resolvedest{
 						Resolvedest: &proto.ResolveDest{
-							Name:          monObject.GetResolvedest().GetName(),
-							Destination:   monObject.GetResolvedest().Destination,
-							Interval:      monObject.GetResolvedest().Interval,
-							ResolveServer: monObject.GetResolvedest().ResolveServer,
+							Name:        monObject.GetResolvedest().GetName(),
+							Destination: monObject.GetResolvedest().Destination,
+							Interval:    monObject.GetResolvedest().Interval,
+							Resolver:    monObject.GetResolvedest().Resolver,
 						},
 					},
 				}
@@ -304,7 +304,7 @@ func calculateUpdate(s *Server, updateClient *ClientConnection) map[string]*prot
 			}
 		}
 
-		s.Logging.Debugf("configserver: update for the monitoring object:%v to the client:%v", update, updateClient.client.GetName())
+		s.Logging.Debugf("configserver: calculated update for the monitoring object:%v to the client:%v", update, updateClient.client.GetName())
 	}
 	return update
 }
@@ -320,9 +320,9 @@ func broadcastData(s *Server) {
 				//Check the registered clients
 				for _, conn := range s.Connections {
 					s.Logging.Debugf("configserver: sending update to the client:%v on net address:%v", conn.client.GetName(), conn.net)
-					for key, monObject := range calculateUpdate(s, conn) {
-						//convert seconds to millisecond
+					for key, monObject := range calculateUpdate(s, conn) { //convert seconds to millisecond
 						monObject.UpdateInterval = int32(s.ClientUpdateInterval * 1000)
+						s.Logging.Infof("configserver: sending update, monitoring object:%v to the client:%v", key, conn.client.GetName())
 						go func(monObject *proto.MonitoringObject, conn *ClientConnection) {
 							if conn.active {
 								err := conn.stream.Send(monObject)
@@ -331,7 +331,7 @@ func broadcastData(s *Server) {
 									conn.active = false
 									conn.error <- err
 								}
-								s.Logging.Infof("configserver: sent update, monitoring object:%v to the client:%v", key, conn.client.GetName())
+								s.Logging.Infof("configserver: sent update, monitoring object:%t to the client:%v", monObject.Object, conn.client.GetName())
 							}
 						}(monObject, conn)
 					}
@@ -372,6 +372,7 @@ func getData(s *Server) {
 		viper.UnmarshalKey("appdests", &appdestinations)
 
 		for pingDest := range pingdestinations {
+			pingdestinations[pingDest].Name = pingDest
 			newmonitoringObjects[pingDest+"-ping"] = &proto.MonitoringObject{
 				Object: &proto.MonitoringObject_Pingdest{
 					Pingdest: pingdestinations[pingDest],
@@ -381,6 +382,7 @@ func getData(s *Server) {
 
 		}
 		for traceDest := range tracedestinations {
+			tracedestinations[traceDest].Name = traceDest
 			newmonitoringObjects[traceDest+"-trace"] = &proto.MonitoringObject{
 				Object: &proto.MonitoringObject_Tracedest{
 					Tracedest: tracedestinations[traceDest],
@@ -390,6 +392,7 @@ func getData(s *Server) {
 
 		}
 		for resolveDest := range resolvedestinations {
+			resolvedestinations[resolveDest].Name = resolveDest
 			newmonitoringObjects[resolveDest+"-resolve"] = &proto.MonitoringObject{
 				Object: &proto.MonitoringObject_Resolvedest{
 					Resolvedest: resolvedestinations[resolveDest],
@@ -399,6 +402,7 @@ func getData(s *Server) {
 
 		}
 		for appDest := range appdestinations {
+			appdestinations[appDest].Name = appDest
 			newmonitoringObjects[appDest+"-app"] = &proto.MonitoringObject{
 				Object: &proto.MonitoringObject_Appdest{
 					Appdest: appdestinations[appDest],
@@ -425,6 +429,7 @@ func getData(s *Server) {
 	viper.UnmarshalKey("appdests", &appdestinations)
 
 	for pingDest := range pingdestinations {
+		pingdestinations[pingDest].Name = pingDest
 		monitoringObjects[pingDest+"-ping"] = &proto.MonitoringObject{
 			Object: &proto.MonitoringObject_Pingdest{
 				Pingdest: pingdestinations[pingDest],
@@ -433,12 +438,14 @@ func getData(s *Server) {
 		monitoringObjects[pingDest+"-ping"].GetPingdest().Name = pingDest
 	}
 	for traceDest := range tracedestinations {
+		tracedestinations[traceDest].Name = traceDest
 		monitoringObjects[traceDest+"-trace"] = &proto.MonitoringObject{
 			Object: &proto.MonitoringObject_Tracedest{Tracedest: tracedestinations[traceDest]},
 		}
 		monitoringObjects[traceDest+"-trace"].GetTracedest().Name = traceDest
 	}
 	for resolveDest := range resolvedestinations {
+		resolvedestinations[resolveDest].Name = resolveDest
 		monitoringObjects[resolveDest+"-resolve"] = &proto.MonitoringObject{
 			Object: &proto.MonitoringObject_Resolvedest{
 				Resolvedest: resolvedestinations[resolveDest],
@@ -447,6 +454,7 @@ func getData(s *Server) {
 		monitoringObjects[resolveDest+"-resolve"].GetResolvedest().Name = resolveDest
 	}
 	for appDest := range appdestinations {
+		appdestinations[appDest].Name = appDest
 		monitoringObjects[appDest+"-app"] = &proto.MonitoringObject{
 			Object: &proto.MonitoringObject_Appdest{
 				Appdest: appdestinations[appDest],
@@ -458,9 +466,9 @@ func getData(s *Server) {
 	server.MonitorObjects = monitoringObjects
 }
 func main() {
-	server.Logging.Infof("configserver: server is initialized with parameters:%+v", server)
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs)
+	server.Logging.Infof("configserver: server is initialized with parameters:%+v", server)
 	go func() {
 		for {
 			s := <-sigs

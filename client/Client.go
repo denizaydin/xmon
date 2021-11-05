@@ -99,7 +99,7 @@ func (client *XmonClient) Run() {
 						Object:                  monObject.Object,
 						Notify:                  make(chan string),
 					}
-					client.Logging.Infof("Client: creating ping object:%v, values:", key, monObject.Object.GetPingdest())
+					client.Logging.Infof("Client: creating ping object:%v, values:%v", key, monObject.Object.GetPingdest())
 					go CheckIcmpPing(runningPingObjects[key], client)
 				}
 			case *proto.MonitoringObject_Resolvedest:
@@ -128,7 +128,7 @@ func (client *XmonClient) Run() {
 						client.Logging.Debugf("Client: updating resolve object:%v, values:%v", key, monObject.Object.GetResolvedest())
 						runningResolveObjects[key].Object.GetResolvedest().Destination = monObject.Object.GetResolvedest().GetDestination()
 						runningResolveObjects[key].Object.GetResolvedest().Interval = monObject.Object.GetResolvedest().GetInterval()
-						runningResolveObjects[key].Object.GetResolvedest().ResolveServer = monObject.Object.GetResolvedest().GetResolveServer()
+						runningResolveObjects[key].Object.GetResolvedest().Resolver = monObject.Object.GetResolvedest().GetResolver()
 					}
 				} else {
 					runningResolveObjects[key] = &MonObject{
@@ -230,7 +230,7 @@ func (client *XmonClient) Run() {
 				client.Logging.Warnf("Client: unimplemented monitoring object type:%T", t)
 			}
 		}
-		client.Logging.Trace("Client: sleeping for 3sec for scanning monobjects")
+		client.Logging.Trace("Client: sleeping for 1sec for scanning monobjects")
 		stat := &proto.StatsObject{
 			Client:    client.StatsClient,
 			Timestamp: time.Now().UnixNano(),
@@ -241,8 +241,13 @@ func (client *XmonClient) Run() {
 				},
 			},
 		}
-		client.Statschannel <- stat
-		client.Logging.Tracef("Client: sent client stat:%v", stat)
+		select {
+		case client.Statschannel <- stat:
+			client.Logging.Tracef("Client: sent client stat:%v", stat)
+		default:
+			client.Logging.Errorf("Client: can not send client stat:%v", stat)
+		}
+		client.Logging.Tracef("Client: Sleeping for 1 sec")
 		time.Sleep(1 * time.Second)
 	}
 }

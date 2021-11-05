@@ -10,7 +10,7 @@
         }
     },
     "appdests": {
-        "test-1": {
+        "localhost-server": {
             "destination": "localhost:8888",
             "interval":500,
             "type":2,
@@ -20,7 +20,7 @@
             }
     },
     "resolvedests": {
-        "trendyol.com": {
+        "www.google.com": {
             "destination": "www.google.com",
             "interval":1000,
             "groups": {
@@ -29,7 +29,7 @@
             }
     },
     "tracedests": {
-        "trendyol.com": {
+        "www.google.com": {
             "destination": "www.google.com",
             "interval":1000,
             "groups": {

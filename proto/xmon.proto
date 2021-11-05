@@ -12,8 +12,7 @@ option go_package = "xmon/proto";
 
 message ClientStat {
     int32 ConfiguredMonObjects = 1;
-    int32 RunningMonObjects = 2; 
-
+    int32 RunningMonObjects = 2;
 }
 
 message PingStat {
@@ -21,19 +20,22 @@ message PingStat {
     int32 rtt = 2;
     int32 code=3;
     int32 ttl=4;
+    bool error=5;
 }
 message ResolveStat {
     string destination = 1;
     int32 rtt = 2;
     string resolvedip=3;
     string resolver=4;
-    
+    bool error=5;
 }
 message TraceStat {
     string destination = 1;
     string hopIP = 2;
     int32 hopTTL = 3;
     int32 hopRTT= 4;
+    bool error=5;
+
 }
 message AppStat {
     string destination = 1;
@@ -45,7 +47,7 @@ message AppStat {
     int64 clientNetworkDelay=7;
     int64 serverNetworkDelay=8;
     int64 serverResponseDelay=9;
-
+    bool error=10;
 }
 message StatsObject {
     Client client =1;
@@ -80,7 +82,7 @@ message ResolveDest {
     string name = 1;
     string destination = 2; //Destination, www.nmon.com
     int32 interval = 3; //Probe interval in micro seconds
-    string resolveServer = 4; //DNS Server to be used, 8.8.8.8 e.t.c
+    string resolver = 4; //DNS Server to be used, 8.8.8.8 e.t.c
     map<string, string> groups = 5; //Member groups
 }
 message AppDest {
@@ -111,10 +113,14 @@ Structures used by configuration and statistic servers
 message Client {
     string id = 1; //Uniq id representing the client. It should be uniuqe during client reboots and between clients.
     string name = 2; //Name of client. Must be unique.
-    map<string, string> groups = 3; //Member groups
-    bool addAsPingDest = 4; //Willing to be monitored as pingDest. If true this client will monitored by its group members.
-    bool addAsTraceDest = 5; //Willing to be monitores as TraceDest. If true this client will monitored by its group members.
-    bool addAsAppDest = 6; //Willing to be monitores as TraceDest. If true this client will monitored by its group members.
+    string as=3;
+    string asowner=4;
+    string ip=5;
+    string ipnet=6;
+    map<string, string> groups = 7; //Member groups
+    bool addAsPingDest = 8; //Willing to be monitored as pingDest. If true this client will monitored by its group members.
+    bool addAsTraceDest = 9; //Willing to be monitores as TraceDest. If true this client will monitored by its group members.
+    bool addAsAppDest = 10; //Willing to be monitores as TraceDest. If true this client will monitored by its group members.
 }
 //Connect message used while registering the servers.
 message Connect {

@@ -110,7 +110,7 @@ func init() {
 	}
 	statsserver.ip2ASN = make(map[string]float64)
 	statsserver.ip2Holder = make(map[string]string)
-	statsserver.logging.Info("statisticserver: started with paramaters:%v", statsserver)
+	statsserver.logging.Info("xmon statisticserver: started with paramaters:%v", statsserver)
 }
 
 //IP2long - returng ip address as float64 for prometheus metric recording
@@ -273,7 +273,7 @@ func writeToDB(s *StatsServer) {
 						"configured_objects": stat.NmonStat.GetClientstat().GetConfiguredMonObjects(),
 						"running_objects":    stat.NmonStat.GetClientstat().GetRunningMonObjects(),
 					},
-					time.Now())
+					time.UnixMicro(stat.NmonStat.GetTimestamp()))
 				// write asynchronously
 				writeAPI.WritePoint(p)
 				// write asynchronously
@@ -294,7 +294,7 @@ func writeToDB(s *StatsServer) {
 						"ttl":  stat.NmonStat.GetPingstat().GetTtl(),
 						"code": stat.NmonStat.GetPingstat().GetCode(),
 					},
-					time.Now())
+					time.UnixMicro(stat.NmonStat.GetTimestamp()))
 				// write asynchronously
 				writeAPI.WritePoint(p)
 			case *proto.StatsObject_Resolvestat:
@@ -309,12 +309,12 @@ func writeToDB(s *StatsServer) {
 						"destination":   stat.NmonStat.GetResolvestat().GetDestination(),
 						"resolver":      stat.NmonStat.GetResolvestat().GetResolver(),
 						"error":         strconv.FormatBool(stat.NmonStat.GetResolvestat().GetError()),
+						"resolvedip":    stat.NmonStat.GetResolvestat().GetResolvedip(),
 					},
 					map[string]interface{}{
-						"rtt":        stat.NmonStat.GetResolvestat().GetRtt(),
-						"resolvedip": stat.NmonStat.GetResolvestat().GetResolvedip(),
+						"rtt": stat.NmonStat.GetResolvestat().GetRtt(),
 					},
-					time.Now())
+					time.UnixMicro(stat.NmonStat.GetTimestamp()))
 				// write asynchronously
 				writeAPI.WritePoint(p)
 			case *proto.StatsObject_Tracestat:
@@ -335,7 +335,7 @@ func writeToDB(s *StatsServer) {
 						"rtt": stat.NmonStat.GetTracestat().GetHopRTT(),
 						"ttl": stat.NmonStat.GetTracestat().GetHopTTL(),
 					},
-					time.Now())
+					time.UnixMicro(stat.NmonStat.GetTimestamp()))
 				// write asynchronously
 				writeAPI.WritePoint(p)
 			case *proto.StatsObject_Appstat:
@@ -355,7 +355,7 @@ func writeToDB(s *StatsServer) {
 						"server_Network_Delay":  stat.NmonStat.GetAppstat().ServerNetworkDelay,
 						"server_Response_Delay": stat.NmonStat.GetAppstat().ServerResponseDelay,
 					},
-					time.Now())
+					time.UnixMicro(stat.NmonStat.GetTimestamp()))
 				// write asynchronously
 				writeAPI.WritePoint(p)
 			}

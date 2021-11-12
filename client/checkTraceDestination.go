@@ -12,9 +12,9 @@ import (
 )
 
 //CheckTraceDestination -
-func CheckTraceDestination(tracedest *MonObject, c *XmonClient) {
+func CheckTraceDestination(tracedest *MonObject, client *XmonClient) {
 	tracedest.ThreadupdateTime = time.Now()
-	c.Logging.Infof("tracer:%v destination:%v, starting with initial values:%v", tracedest.Object.GetTracedest().GetName(), tracedest.Object.GetTracedest().GetDestination(), tracedest.Object)
+	client.Logging.Infof("tracer:%v destination:%v, starting with initial values:%v", tracedest.Object.GetTracedest().GetName(), tracedest.Object.GetTracedest().GetDestination(), tracedest.Object)
 	options := traceroute.TracerouteOptions{}
 	var destination net.IP
 	done := make(chan bool, 2)
@@ -26,14 +26,14 @@ func CheckTraceDestination(tracedest *MonObject, c *XmonClient) {
 		for {
 			select {
 			case <-done:
-				c.Logging.Tracef("tracer:%v destination:%v, out from stats loop", tracedest.Object.GetTracedest().GetName(), tracedest.Object.GetTracedest().GetDestination())
+				client.Logging.Tracef("tracer:%v destination:%v, out from stats loop", tracedest.Object.GetTracedest().GetName(), tracedest.Object.GetTracedest().GetDestination())
 				return
 			case hop, ok := <-intstatschannel:
 				if ok {
 					tracedest.ThreadupdateTime = time.Now()
 					stat := &proto.StatsObject{
-						Client:    c.StatsClient,
-						Timestamp: time.Now().UnixNano(),
+						Client:    client.StatsClient,
+						Timestamp: time.Now().UnixMicro(),
 						Object: &proto.StatsObject_Tracestat{
 							Tracestat: &proto.TraceStat{
 								Destination: tracedest.Object.GetTracedest().GetDestination(),
@@ -44,10 +44,10 @@ func CheckTraceDestination(tracedest *MonObject, c *XmonClient) {
 						},
 					}
 					select {
-					case c.Statschannel <- stat:
-						c.Logging.Tracef("tracer:%v destination:%v, sent stats:%v", tracedest.Object.GetTracedest().GetName(), tracedest.Object.GetTracedest().GetDestination(), stat)
+					case client.Statschannel <- stat:
+						client.Logging.Tracef("tracer:%v destination:%v, sent stats:%v", tracedest.Object.GetTracedest().GetName(), tracedest.Object.GetTracedest().GetDestination(), stat)
 					default:
-						c.Logging.Errorf("tracer:%v destination:%v, can not send stats:%v", tracedest.Object.GetTracedest().GetName(), tracedest.Object.GetTracedest().GetDestination(), stat)
+						client.Logging.Errorf("tracer:%v destination:%v, can not send stats:%v", tracedest.Object.GetTracedest().GetName(), tracedest.Object.GetTracedest().GetDestination(), stat)
 					}
 				}
 			}
@@ -57,7 +57,7 @@ func CheckTraceDestination(tracedest *MonObject, c *XmonClient) {
 	for !exit {
 		select {
 		case <-tracedest.Notify:
-			c.Logging.Infof("tracer:%v destination%v, stop request", tracedest.Object.GetTracedest().GetName(), tracedest.Object.GetTracedest().GetDestination())
+			client.Logging.Infof("tracer:%v destination%v, stop request", tracedest.Object.GetTracedest().GetName(), tracedest.Object.GetTracedest().GetDestination())
 			close(intstatschannel)
 			exit = true
 		default:
@@ -67,16 +67,16 @@ func CheckTraceDestination(tracedest *MonObject, c *XmonClient) {
 			destination = net.ParseIP(tracedest.Object.GetTracedest().GetDestination())
 			if destination != nil {
 				if len(destination.To4()) != net.IPv4len {
-					c.Logging.Errorf("tracer:%v destination:%v, unimplemented destiantion type:%v", tracedest.Object.GetTracedest().GetName(), tracedest.Object.GetTracedest().GetDestination(), destination)
+					client.Logging.Errorf("tracer:%v destination:%v, unimplemented destiantion type:%v", tracedest.Object.GetTracedest().GetName(), tracedest.Object.GetTracedest().GetDestination(), destination)
 					continue
 				}
 			} else {
 				ips, err := net.LookupHost(tracedest.Object.GetTracedest().GetDestination())
 				if err == nil {
 					destination = net.ParseIP(ips[0])
-					c.Logging.Tracef("tracer:%v destination:%v, resolved as:%v", tracedest.Object.GetTracedest().GetName(), tracedest.Object.GetTracedest().GetDestination(), destination)
+					client.Logging.Tracef("tracer:%v destination:%v, resolved as:%v", tracedest.Object.GetTracedest().GetName(), tracedest.Object.GetTracedest().GetDestination(), destination)
 				} else {
-					c.Logging.Errorf("tracer:%v destination:%v, resolve error for destination", tracedest.Object.GetTracedest().GetName(), tracedest.Object.GetTracedest().GetDestination())
+					client.Logging.Errorf("tracer:%v destination:%v, resolve error for destination", tracedest.Object.GetTracedest().GetName(), tracedest.Object.GetTracedest().GetDestination())
 					continue
 				}
 			}
@@ -86,7 +86,7 @@ func CheckTraceDestination(tracedest *MonObject, c *XmonClient) {
 			options.SetFirstHop(1) // Start from the default gw
 			_, err := traceroute.Traceroute(destination.String(), &options, intstatschannel)
 			if err != nil {
-				c.Logging.Errorf("tracer:%v destination:%v, err:%v", tracedest.Object.GetTracedest().GetName(), tracedest.Object.GetTracedest().GetDestination(), err)
+				client.Logging.Errorf("tracer:%v destination:%v, err:%v", tracedest.Object.GetTracedest().GetName(), tracedest.Object.GetTracedest().GetDestination(), err)
 			}
 			intstatschannel = make(chan traceroute.TracerouteHop, 0)
 			tracedest.ThreadupdateTime = time.Now()
@@ -95,5 +95,5 @@ func CheckTraceDestination(tracedest *MonObject, c *XmonClient) {
 	done <- true
 	waitGroup.Wait()
 	close(done)
-	c.Logging.Infof("tracer:%v destination:%v, exiting", tracedest.Object.GetTracedest().GetName(), tracedest.Object.GetTracedest().GetDestination())
+	client.Logging.Infof("tracer:%v destination:%v, exiting", tracedest.Object.GetTracedest().GetName(), tracedest.Object.GetTracedest().GetDestination())
 }

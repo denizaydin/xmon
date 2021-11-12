@@ -3,6 +3,7 @@
         "google": {
             "destination": "www.google.com",
             "timeout": "3",
+            "packetSize": 1000,
             "interval": 3000,
             "groups": {
                 "default": "default"

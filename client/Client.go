@@ -29,15 +29,13 @@ type XmonClient struct {
 	ConfigClient            *proto.Client
 	IsConfigClientConnected bool
 	//StatsClient: Stores statistic client params
-	StatsClient            *proto.Client
-	StatsConnClient        proto.StatsClient
-	IsStatsClientConnected bool
-	Statschannel           chan *proto.StatsObject
-	MonObecjts             map[string]*MonObject
-	MonObjectScanTimer     *time.Ticker
-	Logging                *logrus.Logger
-	WaitChannel            chan int
-	WaitGroup              *sync.WaitGroup
+	StatsClient        *proto.Client
+	Statschannel       chan *proto.StatsObject
+	MonObecjts         map[string]*MonObject
+	MonObjectScanTimer *time.Ticker
+	Logging            *logrus.Logger
+	WaitChannel        chan int
+	WaitGroup          *sync.WaitGroup
 }
 
 //runningPingObjects - Total number of ping monitoring objects
@@ -233,7 +231,7 @@ func (client *XmonClient) Run() {
 		client.Logging.Trace("Client: sleeping for 1sec for scanning monobjects")
 		stat := &proto.StatsObject{
 			Client:    client.StatsClient,
-			Timestamp: time.Now().UnixNano(),
+			Timestamp: time.Now().UnixMicro(),
 			Object: &proto.StatsObject_Clientstat{
 				Clientstat: &proto.ClientStat{
 					ConfiguredMonObjects: int32(len(client.MonObecjts)),
@@ -248,7 +246,7 @@ func (client *XmonClient) Run() {
 			client.Logging.Errorf("Client: can not send client stat:%v", stat)
 		}
 		client.Logging.Tracef("Client: Sleeping for 1 sec")
-		time.Sleep(1 * time.Second)
+		time.Sleep(3 * time.Second)
 	}
 }
 

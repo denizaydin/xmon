@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"net"
 	"os"
 	"time"
@@ -26,37 +27,99 @@ TODO:
 func CheckIcmpPing(pingdest *MonObject, client *XmonClient) {
 	pingdest.ThreadupdateTime = time.Now()
 	client.Logging.Infof("pinger:%v destination:%v, initial values:%v", pingdest.Object.GetPingdest().GetName(), pingdest.Object.GetPingdest().GetDestination(), pingdest.Object.GetPingdest())
+	//pid - used in icmp header
 	pid := os.Getpid() & 0xffff
-	hop := 254
+	//id - used in icmp header
+	id := 254
+	//seq - used in icmp header, incremented on each request
 	seq := 0
-	pingdest.ThreadupdateTime = time.Now()
+	//packetSize - min packet size
 	packetSize := 64
+	//ttl - initial packet size
 	ttl := 0
-	exit := false
+	//destination - resolved destination, can be changed on each request
 	var destination net.IP
+	//exit - exiting way of the probe loop
+	exit := false
+	//prove sould notify our thread update timer, in that way calling function knows that prove is still running.
 	for !exit {
 		select {
 		case <-pingdest.Notify:
-			client.Logging.Debugf("pinger:%v received stop request", pingdest.Object.GetPingdest().GetName())
+			client.Logging.Infof("pinger:%v received stop reques, exiting from the internal loop", pingdest.Object.GetPingdest().GetName())
 			exit = true
 		default:
+			pingdest.ThreadupdateTime = time.Now()
 			//As we are lots of error handling which can be changed during continuous ping process we MUST wait before looping. If not we MAY hit the same error in very short time:)
 			pingdest.ThreadInterval = pingdest.Object.GetPingdest().GetInterval()
+			//Probe set the intevarl at the begining. This prevents uninterupted running for the loop process while continue process on errors.
 			time.Sleep(time.Duration(time.Duration(pingdest.ThreadInterval) * time.Millisecond))
 			pingdest.ThreadupdateTime = time.Now()
+			//Resolve destination if its not raw ip address
+			destination = net.ParseIP(pingdest.Object.GetPingdest().GetDestination())
+			if destination != nil {
+				if len(destination.To4()) != net.IPv4len {
+					client.Logging.Errorf("pinger:%v destination:%v, unimplemented destiantion type:%v", pingdest.Object.GetPingdest().GetName(), pingdest.Object.GetPingdest().GetDestination(), destination)
+					pingdest.ThreadupdateTime = time.Now()
+					continue
+				}
+			} else {
+				ctx, cancel := context.WithTimeout(context.TODO(), 1*time.Second)
+				var r net.Resolver
+				ips, err := r.LookupHost(ctx, pingdest.Object.GetPingdest().GetDestination())
+				defer cancel() // important to avoid a resource leak
+				pingdest.ThreadupdateTime = time.Now()
+				if err == nil {
+					destination = net.ParseIP(ips[0])
+					client.Logging.Tracef("pinger:%v destination:%v, resolved as:%v", pingdest.Object.GetPingdest().GetName(), pingdest.Object.GetPingdest().GetDestination(), destination)
+				} else {
+					client.Logging.Errorf("pinger:%v destination:%v, resolve error for destination", pingdest.Object.GetPingdest().GetName(), pingdest.Object.GetPingdest().GetDestination())
+					stat := &proto.StatsObject{
+						Client:    client.StatsClient,
+						Timestamp: time.Now().UnixMicro(),
+						Object: &proto.StatsObject_Pingstat{
+							Pingstat: &proto.PingStat{
+								Destination: pingdest.Object.GetPingdest().GetDestination(),
+								Code:        2,
+								Ttl:         0,
+								Error:       true,
+							},
+						},
+					}
+					select {
+					case client.Statschannel <- stat:
+						client.Logging.Tracef("pinger:%v destination:%v, sent stats:%v", pingdest.Object.GetPingdest().GetName(), pingdest.Object.GetPingdest().GetDestination(), stat)
+					default:
+						client.Logging.Errorf("pinger:%v destination:%v, can not send stats:%v", pingdest.Object.GetPingdest().GetName(), pingdest.Object.GetPingdest().GetDestination(), stat)
+					}
+					pingdest.ThreadupdateTime = time.Now()
+					continue
+				}
+			}
+			pingdest.ThreadupdateTime = time.Now()
+			dialedConn, err := net.Dial("ip4:icmp", "0.0.0.0")
+			if err != nil {
+				client.Logging.Errorf("pinger:%v destination:%v, cannot create ipv4:icmp listen", pingdest.Object.GetPingdest().GetName(), pingdest.Object.GetPingdest().GetDestination())
+				return
+			}
+			pingdest.ThreadupdateTime = time.Now()
+			localAddr := dialedConn.LocalAddr()
+			dialedConn.Close()
+			pingdest.ThreadupdateTime = time.Now()
+			//we sould use local address instead "0.0.0.0"
 			netConn, err := net.ListenPacket("ip4:icmp", "0.0.0.0")
 			if err != nil {
 				client.Logging.Errorf("pinger:%v destination:%v, cannot create ipv4:icmp listen", pingdest.Object.GetPingdest().GetName(), pingdest.Object.GetPingdest().GetDestination())
-				//Calling function should reinvoke
 				return
 			}
-			defer netConn.Close()
+			client.Logging.Debugf("pinger:%v destination:%v, localaddr:%v", pingdest.Object.GetPingdest().GetName(), pingdest.Object.GetPingdest().GetDestination(), localAddr.String())
+
 			conn, err := ipv4.NewRawConn(netConn)
 			if err != nil {
 				client.Logging.Errorf("pinger:%v destination:%v, cannot create ipv4:icmp conn", pingdest.Object.GetPingdest().GetName(), pingdest.Object.GetPingdest().GetDestination())
-				//Calling function should reinvoke
 				return
 			}
+			defer conn.Close()
+			pingdest.ThreadupdateTime = time.Now()
 			seq++
 			//Reset sequence for overflow
 			if seq > 255 {
@@ -75,7 +138,7 @@ func CheckIcmpPing(pingdest *MonObject, client *XmonClient) {
 				ttl = 30
 			}
 			body := &icmp.Echo{
-				ID: pid, Seq: hop<<8 | seq,
+				ID: pid, Seq: id<<8 | seq,
 				Data: make([]byte, packetSize-42),
 			}
 			msg := &icmp.Message{
@@ -86,41 +149,8 @@ func CheckIcmpPing(pingdest *MonObject, client *XmonClient) {
 			wb, err := msg.Marshal(nil)
 			if err != nil {
 				client.Logging.Errorf("pinger:%v destination:%v, cannot marshall icmp header:%v", pingdest.Object.GetPingdest().GetName(), pingdest.Object.GetPingdest().GetDestination(), msg)
+				pingdest.ThreadupdateTime = time.Now()
 				continue
-			}
-			destination = net.ParseIP(pingdest.Object.GetPingdest().GetDestination())
-			if destination != nil {
-				if len(destination.To4()) != net.IPv4len {
-					client.Logging.Errorf("pinger:%v destination:%v, unimplemented destiantion type:%v", pingdest.Object.GetPingdest().GetName(), pingdest.Object.GetPingdest().GetDestination(), destination)
-					continue
-				}
-			} else {
-				ips, err := net.LookupHost(pingdest.Object.GetPingdest().GetDestination())
-				if err == nil {
-					destination = net.ParseIP(ips[0])
-					client.Logging.Tracef("pinger:%v destination:%v, resolved as:%v", pingdest.Object.GetPingdest().GetName(), pingdest.Object.GetPingdest().GetDestination(), destination)
-				} else {
-					client.Logging.Errorf("pinger:%v destination:%v, resolve error for destination", pingdest.Object.GetPingdest().GetName(), pingdest.Object.GetPingdest().GetDestination())
-					stat := &proto.StatsObject{
-						Client:    client.StatsClient,
-						Timestamp: time.Now().UnixNano(),
-						Object: &proto.StatsObject_Pingstat{
-							Pingstat: &proto.PingStat{
-								Destination: pingdest.Object.GetPingdest().GetDestination(),
-								Code:        2,
-								Ttl:         0,
-								Error:       true,
-							},
-						},
-					}
-					select {
-					case client.Statschannel <- stat:
-						client.Logging.Debugf("pinger:%v destination:%v, sent stats:%v", pingdest.Object.GetPingdest().GetName(), pingdest.Object.GetPingdest().GetDestination(), stat)
-					default:
-						client.Logging.Errorf("pinger:%v destination:%v, can not send stats:%v", pingdest.Object.GetPingdest().GetName(), pingdest.Object.GetPingdest().GetDestination(), stat)
-					}
-					continue
-				}
 			}
 
 			iph := &ipv4.Header{
@@ -133,12 +163,18 @@ func CheckIcmpPing(pingdest *MonObject, client *XmonClient) {
 				Src:      net.ParseIP("0.0.0.0"),
 				Flags:    ipv4.DontFragment,
 			}
+			//Set timeout to thread interval
+			err = conn.SetDeadline(time.Now().Add(time.Duration(time.Millisecond * time.Duration(pingdest.Object.GetPingdest().GetInterval()))))
+			if err != nil {
+				client.Logging.Errorf("pinger:%v destination:%v, failed to set deadline/timeout err:%v", pingdest.Object.GetPingdest().GetName(), pingdest.Object.GetPingdest().GetDestination(), err)
+				continue
+			}
 			sentAt := time.Now()
 			if err := conn.WriteTo(iph, wb, nil); err != nil {
 				client.Logging.Errorf("pinger:%v destination:%v, unable to send ipv4:icmp packet err:%v", pingdest.Object.GetPingdest().GetName(), pingdest.Object.GetPingdest().GetDestination(), err)
 				continue
 			}
-			client.Logging.Tracef("pinger:%v destination:%v, sent ipv4:icmp seq:%v packet:%v", pingdest.Object.GetPingdest().GetName(), pingdest.Object.GetPingdest().GetDestination(), hop<<8|seq, iph)
+			client.Logging.Tracef("pinger:%v destination:%v, sent ipv4:icmp seq:%v packet:%v", pingdest.Object.GetPingdest().GetName(), pingdest.Object.GetPingdest().GetDestination(), id<<8|seq, iph)
 			//Wait for return
 			err = conn.SetDeadline(time.Now().Add(time.Duration(time.Millisecond * time.Duration(pingdest.Object.GetPingdest().GetInterval()))))
 			if err != nil {
@@ -148,14 +184,17 @@ func CheckIcmpPing(pingdest *MonObject, client *XmonClient) {
 			b := make([]byte, 1500)
 			ipv4h, p, _, err := conn.ReadFrom(b)
 			copy(b, p)
+			timeDiff := time.Now().Sub(sentAt).Milliseconds()
+			pingdest.ThreadupdateTime = time.Now()
 			if err != nil {
 				client.Logging.Errorf("pinger:%v destination:%v, failed to receive ICMP packet err:%v", pingdest.Object.GetPingdest().GetName(), pingdest.Object.GetPingdest().GetDestination(), err)
 				stat := &proto.StatsObject{
 					Client:    client.StatsClient,
-					Timestamp: time.Now().UnixNano(),
+					Timestamp: time.Now().UnixMicro(),
 					Object: &proto.StatsObject_Pingstat{
 						Pingstat: &proto.PingStat{
 							Destination: pingdest.Object.GetPingdest().GetDestination(),
+							Rtt:         int32(timeDiff),
 							Code:        2,
 							Ttl:         0,
 							Error:       true,
@@ -164,19 +203,19 @@ func CheckIcmpPing(pingdest *MonObject, client *XmonClient) {
 				}
 				select {
 				case client.Statschannel <- stat:
-					client.Logging.Debugf("pinger:%v destination:%v, sent stats:%v", pingdest.Object.GetPingdest().GetName(), pingdest.Object.GetPingdest().GetDestination(), stat)
+					client.Logging.Tracef("pinger:%v destination:%v, sent stats:%v", pingdest.Object.GetPingdest().GetName(), pingdest.Object.GetPingdest().GetDestination(), stat)
 				default:
 					client.Logging.Errorf("pinger:%v destination:%v, can not send stats:%v", pingdest.Object.GetPingdest().GetName(), pingdest.Object.GetPingdest().GetDestination(), stat)
 				}
+				pingdest.ThreadupdateTime = time.Now()
 				continue
 			}
-			timeDiff := time.Now().Sub(sentAt).Milliseconds()
 			var icmpMsg *icmp.Message
 			if icmpMsg, err = icmp.ParseMessage(protocolICMP, b[:len(p)]); err != nil {
 				client.Logging.Errorf("pinger:%v destination:%v, unable to parse ICMP message err:%v", pingdest.Object.GetPingdest().GetName(), pingdest.Object.GetPingdest().GetDestination(), err)
 				stat := &proto.StatsObject{
 					Client:    client.StatsClient,
-					Timestamp: time.Now().UnixNano(),
+					Timestamp: time.Now().UnixMicro(),
 					Object: &proto.StatsObject_Pingstat{
 						Pingstat: &proto.PingStat{
 							Destination: pingdest.Object.GetPingdest().GetDestination(),
@@ -189,7 +228,7 @@ func CheckIcmpPing(pingdest *MonObject, client *XmonClient) {
 				}
 				select {
 				case client.Statschannel <- stat:
-					client.Logging.Debugf("pinger:%v destination:%v, sent stats:%v", pingdest.Object.GetPingdest().GetName(), pingdest.Object.GetPingdest().GetDestination(), stat)
+					client.Logging.Tracef("pinger:%v destination:%v, sent stats:%v", pingdest.Object.GetPingdest().GetName(), pingdest.Object.GetPingdest().GetDestination(), stat)
 				default:
 					client.Logging.Errorf("pinger:%v destination:%v, can not send stats:%v", pingdest.Object.GetPingdest().GetName(), pingdest.Object.GetPingdest().GetDestination(), stat)
 				}
@@ -197,11 +236,13 @@ func CheckIcmpPing(pingdest *MonObject, client *XmonClient) {
 			}
 			switch pkt := icmpMsg.Body.(type) {
 			case *icmp.Echo:
-				if pkt.Seq != hop<<8|seq {
-					client.Logging.Errorf("pinger:%v destination:%v, expected seq:%v got:%v from the reply:%v, in:%v msec", pingdest.Object.GetPingdest().GetName(), pingdest.Object.GetPingdest().GetDestination(), hop<<8|seq, pkt.Seq, pkt, timeDiff)
+				sentseq := (id<<8 | (seq))
+				revicedseq := pkt.Seq
+				if revicedseq != sentseq {
+					client.Logging.Errorf("pinger:%v destination:%v, expected seq:%v got:%v from the reply:%v, in:%v msec", pingdest.Object.GetPingdest().GetName(), pingdest.Object.GetPingdest().GetDestination(), sentseq, revicedseq, pkt, timeDiff)
 					stat := &proto.StatsObject{
 						Client:    client.StatsClient,
-						Timestamp: time.Now().UnixNano(),
+						Timestamp: time.Now().UnixMicro(),
 						Object: &proto.StatsObject_Pingstat{
 							Pingstat: &proto.PingStat{
 								Destination: pingdest.Object.GetPingdest().GetDestination(),
@@ -214,37 +255,37 @@ func CheckIcmpPing(pingdest *MonObject, client *XmonClient) {
 					}
 					select {
 					case client.Statschannel <- stat:
-						client.Logging.Debugf("pinger:%v destination:%v, sent stats:%v", pingdest.Object.GetPingdest().GetName(), pingdest.Object.GetPingdest().GetDestination(), stat)
+						client.Logging.Tracef("pinger:%v destination:%v, sent stats:%v", pingdest.Object.GetPingdest().GetName(), pingdest.Object.GetPingdest().GetDestination(), stat)
 					default:
 						client.Logging.Errorf("pinger:%v destination:%v, can not send stats:%v", pingdest.Object.GetPingdest().GetName(), pingdest.Object.GetPingdest().GetDestination(), stat)
 					}
-					continue
-				}
-				client.Logging.Tracef("pinger:%v destination:%v, got the reply seq:%v packet:%v in:%v msec", pingdest.Object.GetPingdest().GetName(), pingdest.Object.GetPingdest().GetDestination(), pkt.Seq, pkt, timeDiff)
-				stat := &proto.StatsObject{
-					Client:    client.StatsClient,
-					Timestamp: time.Now().UnixNano(),
-					Object: &proto.StatsObject_Pingstat{
-						Pingstat: &proto.PingStat{
-							Destination: pingdest.Object.GetPingdest().GetDestination(),
-							Rtt:         int32(timeDiff),
-							Code:        int32(icmpMsg.Code),
-							Ttl:         int32(ipv4h.TTL),
-							Error:       false,
+				} else {
+					client.Logging.Tracef("pinger:%v destination:%v, got the reply seq:%v packet:%v in:%v msec", pingdest.Object.GetPingdest().GetName(), pingdest.Object.GetPingdest().GetDestination(), pkt.Seq, pkt, timeDiff)
+					stat := &proto.StatsObject{
+						Client:    client.StatsClient,
+						Timestamp: time.Now().UnixMicro(),
+						Object: &proto.StatsObject_Pingstat{
+							Pingstat: &proto.PingStat{
+								Destination: pingdest.Object.GetPingdest().GetDestination(),
+								Rtt:         int32(timeDiff),
+								Code:        int32(icmpMsg.Code),
+								Ttl:         int32(ipv4h.TTL),
+								Error:       false,
+							},
 						},
-					},
-				}
-				select {
-				case client.Statschannel <- stat:
-					client.Logging.Debugf("pinger:%v destination:%v, sent stats:%v", pingdest.Object.GetPingdest().GetName(), pingdest.Object.GetPingdest().GetDestination(), stat)
-				default:
-					client.Logging.Errorf("pinger:%v destination:%v, can not send stats:%v", pingdest.Object.GetPingdest().GetName(), pingdest.Object.GetPingdest().GetDestination(), stat)
+					}
+					select {
+					case client.Statschannel <- stat:
+						client.Logging.Tracef("pinger:%v destination:%v, sent stats:%v", pingdest.Object.GetPingdest().GetName(), pingdest.Object.GetPingdest().GetDestination(), stat)
+					default:
+						client.Logging.Errorf("pinger:%v destination:%v, can not send stats:%v", pingdest.Object.GetPingdest().GetName(), pingdest.Object.GetPingdest().GetDestination(), stat)
+					}
 				}
 			case *icmp.TimeExceeded:
 				client.Logging.Tracef("pinger:%v destination:%v, ttl:%v expired at:%v, in:%v msec", pingdest.Object.GetPingdest().GetName(), pingdest.Object.GetPingdest().GetDestination(), ttl, ipv4h.Src, timeDiff)
 				stat := &proto.StatsObject{
 					Client:    client.StatsClient,
-					Timestamp: time.Now().UnixNano(),
+					Timestamp: time.Now().UnixMicro(),
 					Object: &proto.StatsObject_Pingstat{
 						Pingstat: &proto.PingStat{
 							Destination: pingdest.Object.GetPingdest().GetDestination(),
@@ -257,7 +298,7 @@ func CheckIcmpPing(pingdest *MonObject, client *XmonClient) {
 				}
 				select {
 				case client.Statschannel <- stat:
-					client.Logging.Debugf("pinger:%v destination:%v, sent stats:%v", pingdest.Object.GetPingdest().GetName(), pingdest.Object.GetPingdest().GetDestination(), stat)
+					client.Logging.Tracef("pinger:%v destination:%v, sent stats:%v", pingdest.Object.GetPingdest().GetName(), pingdest.Object.GetPingdest().GetDestination(), stat)
 				default:
 					client.Logging.Errorf("pinger:%v destination:%v, can not send stats:%v", pingdest.Object.GetPingdest().GetName(), pingdest.Object.GetPingdest().GetDestination(), stat)
 				}
@@ -265,7 +306,7 @@ func CheckIcmpPing(pingdest *MonObject, client *XmonClient) {
 				client.Logging.Warnf("pinger:%v destination:%v, unhandled packet:%v in:%v msec", pingdest.Object.GetPingdest().GetName(), pingdest.Object.GetPingdest().GetDestination(), icmpMsg, timeDiff)
 				stat := &proto.StatsObject{
 					Client:    client.StatsClient,
-					Timestamp: time.Now().UnixNano(),
+					Timestamp: time.Now().UnixMicro(),
 					Object: &proto.StatsObject_Pingstat{
 						Pingstat: &proto.PingStat{
 							Destination: pingdest.Object.GetPingdest().GetDestination(),
@@ -278,7 +319,7 @@ func CheckIcmpPing(pingdest *MonObject, client *XmonClient) {
 				}
 				select {
 				case client.Statschannel <- stat:
-					client.Logging.Debugf("pinger:%v destination:%v, sent stats:%v", pingdest.Object.GetPingdest().GetName(), pingdest.Object.GetPingdest().GetDestination(), stat)
+					client.Logging.Tracef("pinger:%v destination:%v, sent stats:%v", pingdest.Object.GetPingdest().GetName(), pingdest.Object.GetPingdest().GetDestination(), stat)
 				default:
 					client.Logging.Errorf("pinger:%v destination:%v, can not send stats:%v", pingdest.Object.GetPingdest().GetName(), pingdest.Object.GetPingdest().GetDestination(), stat)
 				}
@@ -287,6 +328,7 @@ func CheckIcmpPing(pingdest *MonObject, client *XmonClient) {
 				client.Logging.Errorf("pinger:%v destination:%v, reponse time:%v can not be bigger than interval:%v which is also timeout of the request", pingdest.Object.GetPingdest().GetName(), pingdest.Object.GetPingdest().GetDestination(), timeDiff, pingdest.Object.GetPingdest().GetInterval())
 			}
 			pingdest.ThreadupdateTime = time.Now()
+			netConn.Close()
 		}
 	}
 	client.Logging.Infof("pinger:%v destination:%v, exiting", pingdest.Object.GetPingdest().GetName(), pingdest.Object.GetPingdest().GetDestination(), pingdest.Object.GetPingdest())

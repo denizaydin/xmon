@@ -36,7 +36,7 @@ func CheckGRPCServer(grpcDest *MonObject, client *XmonClient) {
 			defer cancel()
 			client.Logging.Tracef("apper:grpc client:%v  destination:%v, sending unary echo request", grpcDest.Object.GetAppdest().GetName(), grpcDest.Object.GetAppdest().GetDestination())
 			res, err := c.UnaryEcho(ctx, &proto.XmonEchoRequest{
-				ClientSendTimestamp:    time.Now().UnixNano(),
+				ClientSendTimestamp:    time.Now().UnixMicro(),
 				ServerReceiveTimestamp: 0,
 				ServerSendTimestamp:    0,
 				ClientReceiveTimestamp: 0,
@@ -46,7 +46,7 @@ func CheckGRPCServer(grpcDest *MonObject, client *XmonClient) {
 				//context error. Calling program should rewoke. Retry count may be added.
 				stat := &proto.StatsObject{
 					Client:    client.StatsClient,
-					Timestamp: time.Now().UnixNano(),
+					Timestamp: time.Now().UnixMicro(),
 					Object: &proto.StatsObject_Appstat{Appstat: &proto.AppStat{
 						Destination: grpcDest.Object.GetAppdest().GetDestination(),
 						Error:       true,
@@ -63,7 +63,7 @@ func CheckGRPCServer(grpcDest *MonObject, client *XmonClient) {
 			receiveTime := time.Now().UnixNano()
 			stat := &proto.StatsObject{
 				Client:    client.StatsClient,
-				Timestamp: time.Now().UnixNano(),
+				Timestamp: time.Now().UnixMicro(),
 				Object: &proto.StatsObject_Appstat{Appstat: &proto.AppStat{
 					Destination:            grpcDest.Object.GetAppdest().GetDestination(),
 					ClientSendTimestamp:    res.ClientSendTimestamp,

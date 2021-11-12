@@ -57,7 +57,6 @@ func init() {
 		ConfigClient:            &proto.Client{},
 		IsConfigClientConnected: false,
 		StatsClient:             &proto.Client{},
-		IsStatsClientConnected:  false,
 		Statschannel:            make(chan *proto.StatsObject, 100),
 		MonObecjts:              map[string]*xmonClient.MonObject{},
 		MonObjectScanTimer:      &time.Ticker{},
@@ -84,6 +83,7 @@ func init() {
 	flag.StringVar(&c.ConfigClient.Name, "clientName", "", "name to be used as identifier on the server, operating system name will be used as a default")
 	groups = flag.String("groups", "default", "client groups separeted by comma")
 	flag.Parse()
+	// print location and local time
 	switch logLevel {
 	case "disable":
 		c.Logging.SetOutput(ioutil.Discard)
@@ -249,136 +249,133 @@ func getMonitoringObjects(client *xmonClient.XmonClient) {
 	}
 }
 func sendStats(client *xmonClient.XmonClient) {
-	c.Logging.Infof("started statistic server:%v connection", statsServer)
-	go func() {
-		c.Logging.Debugf("started statistic server:%v connection checking", statsServer)
-		for {
-			c.Logging.Debugf("is statistic server connected?:%v", c.IsStatsClientConnected)
-			if !c.IsStatsClientConnected {
-				//Get our ASN, and ASN owner
-				//Get our public ip,
-				asn := "unkown"
-				asnowner := "unkown"
-				clientip := "unknown"
-				clientnet := "unkown"
-				url := "https://api.ipify.org?format=text"
-				c.Logging.Debug("Getting IP address from  ipify ...")
-				resp, err := http.Get(url)
-				if err != nil {
-					c.Logging.Warnf("can not get ip address,err:%v", err)
-				}
-				defer resp.Body.Close()
-				ip, err := ioutil.ReadAll(resp.Body)
-				if err == nil {
-					clientip = string(ip)
-					clientnet := string(ip) + "/24"
-					var p ripe.Prefix
-					p.Set(clientnet)
-					p.GetData()
-					c.Logging.Tracef("xmon statisticserver: got the client information from ripe:%v", p)
-					data, _ := p.Data["data"].(map[string]interface{})
-					asns := data["asns"].([]interface{})
-					//TODO: more than one ASN per prefix?
-					for _, h := range asns {
-						asnowner = h.(map[string]interface{})["holder"].(string)
-						asn = fmt.Sprintf("%f", h.(map[string]interface{})["asn"].(float64))
-					}
-				} else {
-					c.Logging.Warnf("can not parse ip address,err:%v", err)
-				}
-				c.StatsClient.As = asn
-				c.StatsClient.Asowner = asnowner
-				c.StatsClient.Ip = clientip
-				c.StatsClient.Ipnet = clientnet
-				c.Logging.Tracef("tring to connect statistic server:%v with name:%v and id:%v, public:%v, as:%v, asowner:%v", *statsServer, c.StatsClient.GetName(), c.StatsClient.GetId(), ip, asn, asnowner)
-				conn, err := grpc.Dial(*statsServer, grpc.WithInsecure(), grpc.WithKeepaliveParams(keepalive.ClientParameters{
-					Time:                1 * time.Second, // send pings every 1 seconds if there is no activity
-					Timeout:             5 * time.Second, // wait 5 second for ping ack before considering the connection dead
-					PermitWithoutStream: true,            // send pings even without active streams
-				}), grpc.WithDefaultServiceConfig(`{
-			"methodConfig": [{
-			  "name": [{"service": "nmon client service"}],
-			  "waitForReady": true,
-			  "retryPolicy": {
-				  "MaxAttempts": 4,
-				  "InitialBackoff": "1s",
-				  "MaxBackoff": "6s",
-				  "BackoffMultiplier": 1.5,
-				  "RetryableStatusCodes": [ "UNAVAILABLE" ]
-			  }
-			}]}`), grpc.WithBlock())
-				if err != nil {
-					c.Logging.Errorf("could not connect to statistic service:%v, waiting for 30sec to retry", err)
-					c.IsStatsClientConnected = false
-					time.Sleep(30 * time.Second)
-					continue
-				}
-				c.Logging.Tracef("connected to the statistic server:%v with name:%v and id:%v", *statsServer, c.StatsClient.GetName(), c.StatsClient.GetId())
-				c.StatsConnClient = proto.NewStatsClient(conn)
-				c.IsStatsClientConnected = true
-			}
-			c.Logging.Debug("cheking statistic server connection in 10sec")
-			time.Sleep(10 * time.Second)
-		}
-	}()
-
+	c.Logging.Infof("started statistic function:%v connection", statsServer)
+	lastDrainTime := time.Now()
+	interval := int64(1000)
 	for {
-		if c.IsStatsClientConnected {
-			numberOfWaitingStats := len(c.Statschannel)
-			if numberOfWaitingStats > (len(c.Statschannel) * 20 / 100) {
-				c.Logging.Tracef("received stat channel len:%v cap:%v", len(c.Statschannel), cap(c.Statschannel))
-				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				defer cancel()
-				stream, err := c.StatsConnClient.RecordStats(ctx)
-				i := 0
-				if err != nil {
-					client.Logging.Errorf("statistic service registration failed:%v, sleeping 1sec", err)
-					c.IsStatsClientConnected = false
-					continue
-				}
-				for i < numberOfWaitingStats {
-					stat := <-c.Statschannel
-					if err := stream.Send(stat); err != nil {
-						c.Logging.Errorf("can not send stats:%v, err:%v", stream, err)
-						c.IsStatsClientConnected = false
-						break
-					}
-					c.Logging.Tracef("sent statistics:%v", stat)
-					c.IsStatsClientConnected = true
-					i++
-				}
-				stream.CloseSend()
+		numberOfWaitingStats := len(c.Statschannel)
+		c.Logging.Debugf("statitic channel len:%v cap:%v", len(c.Statschannel), cap(c.Statschannel))
+		if numberOfWaitingStats > (cap(c.Statschannel)*60/100) || time.Now().Sub(lastDrainTime).Milliseconds() > 5000 {
+			//Get our public information
+			asn := "unkown"
+			asnowner := "unkown"
+			clientip := "unknown"
+			clientnet := "unkown"
+			url := "https://api.ipify.org?format=text"
+			c.Logging.Debugf("getting IP address from:%v", url)
+			resp, err := http.Get(url)
+			if err != nil {
+				c.Logging.Warnf("can not get ip address,err:%v", err)
 			}
-			//How long we will check the stat channel, for preventing infinite loop
-			//TODO: Dynamic wait interval for checking buffered channel. If its fill quicly we should drain more often.
-			time.Sleep(10 * time.Millisecond)
-		} else {
-			c.Logging.Warn("not connected to the statistic server, sleeping for 1sec")
-			time.Sleep(1 * time.Second)
+			defer resp.Body.Close()
+			ip, err := ioutil.ReadAll(resp.Body)
+			if err == nil {
+				clientip = string(ip)
+				clientnet := string(ip) + "/24"
+				var p ripe.Prefix
+				p.Set(clientnet)
+				p.GetData()
+				c.Logging.Tracef("xmon statisticserver: got the client information from ripe:%v", p)
+				data, _ := p.Data["data"].(map[string]interface{})
+				asns := data["asns"].([]interface{})
+				//TODO: more than one ASN per prefix?
+				for _, h := range asns {
+					asnowner = h.(map[string]interface{})["holder"].(string)
+					asn = fmt.Sprintf("%f", h.(map[string]interface{})["asn"].(float64))
+				}
+			} else {
+				c.Logging.Warnf("can not parse ip address,err:%v", err)
+			}
+			c.StatsClient.As = asn
+			c.StatsClient.Asowner = asnowner
+			c.StatsClient.Ip = clientip
+			c.StatsClient.Ipnet = clientnet
+			c.Logging.Tracef("tring to connect statistic server:%v with name:%v and id:%v, public:%v, as:%v, asowner:%v", *statsServer, c.StatsClient.GetName(), c.StatsClient.GetId(), ip, asn, asnowner)
+
+			c.Logging.Infof("statitic channel len:%v cap:%v, needs to be drained", len(c.Statschannel), cap(c.Statschannel))
+			conn, err := grpc.Dial(*statsServer, grpc.WithInsecure(), grpc.WithKeepaliveParams(keepalive.ClientParameters{
+				Time:                1 * time.Second, // send pings every 1 seconds if there is no activity
+				Timeout:             5 * time.Second, // wait 5 second for ping ack before considering the connection dead
+				PermitWithoutStream: true,            // send pings even without active streams
+			}), grpc.WithDefaultServiceConfig(`{
+		"methodConfig": [{
+		  "name": [{"service": "nmon client service"}],
+		  "waitForReady": true,
+		  "retryPolicy": {
+			  "MaxAttempts": 4,
+			  "InitialBackoff": "1s",
+			  "MaxBackoff": "6s",
+			  "BackoffMultiplier": 1.5,
+			  "RetryableStatusCodes": [ "UNAVAILABLE" ]
+		  }
+		}]}`), grpc.WithBlock())
+			if err != nil {
+				c.Logging.Errorf("could not connect to statistic service:%v, waiting for 30sec to retry", err)
+				time.Sleep(3 * time.Second)
+				continue
+			}
+			c.Logging.Tracef("connected to the statistic server:%v with name:%v and id:%v", *statsServer, c.StatsClient.GetName(), c.StatsClient.GetId())
+			defer conn.Close()
+			statsClient := proto.NewStatsClient(conn)
+			defer conn.Close()
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			stream, err := statsClient.RecordStats(ctx)
+			i := 0
+			if err != nil {
+				client.Logging.Errorf("statistic service registration failed:%v, sleeping 1sec", err)
+				continue
+			}
+			for i < numberOfWaitingStats {
+				stat := <-c.Statschannel
+				if err := stream.Send(stat); err != nil {
+					c.Logging.Errorf("can not send stats:%v, err:%v", stream, err)
+					break
+				}
+				c.Logging.Tracef("sent statistics:%v", stat)
+				i++
+			}
+			lastDrainTime = time.Now()
+			stream.CloseSend()
 		}
+		//How long we will check the stat channel, for preventing infinite loop
+		//TODO: Dynamic wait interval for checking buffered channel. If its fill quicly we should drain more often.
+		c.Logging.Debugf("lastDrainTime:%v interval:%v diff:%v", lastDrainTime, interval, time.Now().Sub(lastDrainTime).Milliseconds())
+
+		if time.Now().Sub(lastDrainTime).Milliseconds() > interval {
+			interval = interval * 2
+			if interval > 3000 {
+				interval = 3000
+			}
+		} else {
+			interval = interval / 2
+			if interval < 200 {
+				interval = 200
+			}
+		}
+		c.Logging.Infof("checking stats channel in:%v msec", interval)
+		time.Sleep(time.Duration(interval) * time.Millisecond)
 	}
 }
 
 func main() {
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs)
-	c.Logging.Infof("client is initialized with parameters:%v", c)
-	go getMonitoringObjects(c)
-	go sendStats(c)
-
 	go func() {
 		for {
 			s := <-sigs
 			switch s {
 			case syscall.SIGURG:
-				c.Logging.Infof("received unhndled %v signal from os", s)
+				c.Logging.Infof("xmon statisticserver: received unhandled %v signal from os", s)
 			default:
-				c.Logging.Infof("received %v signal from os,exiting", s)
-				c.Stop()
+				c.Logging.Infof("xmon statisticserver: received %v signal from os,exiting", s)
 				os.Exit(1)
 			}
 		}
 	}()
+	c.Logging.Infof("client is initialized with parameters:%v", c)
+	go getMonitoringObjects(c)
+	go sendStats(c)
 
 	c.Run()
 	c.WaitGroup.Add(1)

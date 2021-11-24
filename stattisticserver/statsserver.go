@@ -288,11 +288,11 @@ func writeToDB(s *StatsServer) {
 						"client_net":    stat.ClientNet,
 						"destination":   stat.NmonStat.GetPingstat().GetDestination(),
 						"error":         strconv.FormatBool(stat.NmonStat.GetPingstat().GetError()),
+						"code":          fmt.Sprint(stat.NmonStat.GetPingstat().GetCode()),
+						"ttl":           fmt.Sprint(stat.NmonStat.GetPingstat().GetTtl()),
 					},
 					map[string]interface{}{
-						"rtt":  stat.NmonStat.GetPingstat().GetRtt(),
-						"ttl":  stat.NmonStat.GetPingstat().GetTtl(),
-						"code": stat.NmonStat.GetPingstat().GetCode(),
+						"rtt": stat.NmonStat.GetPingstat().GetRtt(),
 					},
 					time.UnixMicro(stat.NmonStat.GetTimestamp()))
 				// write asynchronously

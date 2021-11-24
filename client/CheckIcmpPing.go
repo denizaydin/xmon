@@ -195,7 +195,7 @@ func CheckIcmpPing(pingdest *MonObject, client *XmonClient) {
 						Pingstat: &proto.PingStat{
 							Destination: pingdest.Object.GetPingdest().GetDestination(),
 							Rtt:         int32(timeDiff),
-							Code:        2,
+							Code:        1,
 							Ttl:         0,
 							Error:       true,
 						},
@@ -220,7 +220,7 @@ func CheckIcmpPing(pingdest *MonObject, client *XmonClient) {
 						Pingstat: &proto.PingStat{
 							Destination: pingdest.Object.GetPingdest().GetDestination(),
 							Rtt:         int32(timeDiff),
-							Code:        2,
+							Code:        4,
 							Ttl:         int32(ipv4h.TTL),
 							Error:       true,
 						},
@@ -247,7 +247,7 @@ func CheckIcmpPing(pingdest *MonObject, client *XmonClient) {
 							Pingstat: &proto.PingStat{
 								Destination: pingdest.Object.GetPingdest().GetDestination(),
 								Rtt:         int32(timeDiff),
-								Code:        2,
+								Code:        3,
 								Ttl:         int32(ipv4h.TTL),
 								Error:       true,
 							},
